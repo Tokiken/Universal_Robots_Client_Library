@@ -1,0 +1,163 @@
+Subject: [PATCH] removed c++17 flag, made static libs, removed examples
+---
+Index: CMakeLists.txt
+<+>UTF-8
+===================================================================
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt	(revision d150af4e3873e5fa0f9d2dc28c5292b51f937d7e)
++++ b/CMakeLists.txt	(date 1697033303417)
+@@ -13,11 +13,9 @@
+ ##
+ ## Check C++11 support / enable global pedantic and Wall
+ ##
+-include(DefineCXX17CompilerFlag)
+-DEFINE_CXX_17_COMPILER_FLAG(CXX17_FLAG)
+ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -pedantic")
+ 
+-add_library(urcl SHARED
++add_library(urcl STATIC
+     src/comm/tcp_socket.cpp
+     src/comm/tcp_server.cpp
+     src/control/reverse_interface.cpp
+@@ -52,7 +50,9 @@
+ )
+ add_library(ur_client_library::urcl ALIAS urcl)
+ target_compile_options(urcl PRIVATE -Wall -Wextra -Wno-unused-parameter)
+-target_compile_options(urcl PUBLIC ${CXX17_FLAG})
++target_link_options(
++   urcl PUBLIC $<BUILD_INTERFACE:$<$<CXX_COMPILER_ID:GNU>:-static-libgcc;-static-libstdc++>>
++)
+ if(WITH_ASAN)
+   target_compile_options(urcl PUBLIC -fsanitize=address)
+   target_link_options(urcl PUBLIC -fsanitize=address)
+@@ -61,6 +61,7 @@
+   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+   $<INSTALL_INTERFACE:include>
+ )
++set_target_properties(urcl PROPERTIES POSITION_INDEPENDENT_CODE ON)
+ 
+ find_package(Threads REQUIRED)
+ if(THREADS_HAVE_PTHREAD_ARG)
+@@ -79,57 +80,3 @@
+ else()
+   message(STATUS "Building tests disabled.")
+ endif()
+-
+-
+-add_subdirectory(examples)
+-
+-include(GNUInstallDirs)
+-install(TARGETS urcl EXPORT urcl_targets
+-  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+-  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+-)
+-install(DIRECTORY include/ DESTINATION include)
+-
+-install(EXPORT urcl_targets
+-  DESTINATION lib/cmake/ur_client_library
+-  FILE urclTargets.cmake
+-  NAMESPACE ur_client_library::)
+-
+-if(CATKIN_PACKAGE_BIN_DESTINATION)
+-  install(PROGRAMS scripts/start_ursim.sh
+-    DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+-  )
+-else()
+-  install(PROGRAMS scripts/start_ursim.sh
+-    DESTINATION lib/${PROJECT_NAME}
+-  )
+-endif()
+-
+-include(CMakePackageConfigHelpers)
+-write_basic_package_version_file(${CMAKE_CURRENT_BINARY_DIR}/ur_client_libraryConfigVersion.cmake VERSION 0.0.3
+-  COMPATIBILITY SameMajorVersion)
+-install(FILES ur_client_libraryConfig.cmake
+-  DESTINATION lib/cmake/ur_client_library)
+-
+-# Install package.xml file so this package can be processed by ROS toolings
+-# See REP 136 for details
+-# Installing this in non-ROS environments won't have any effect, but it won't harm, either.
+-install(FILES package.xml DESTINATION share/${PROJECT_NAME})
+-
+-#### Begin import ####
+-# Imported from ros-industrial/ros_industrial_cmake_boilerplate
+-# https://github.com/ros-industrial/ros_industrial_cmake_boilerplate/blob/59b86df662/ros_industrial_cmake_boilerplate/cmake/cmake_tools.cmake
+-# Copyright (C) 2018 by George Cave - gcave@stablecoder.ca
+-# Copyright (c) 2020, Southwest Research Institute
+-# Licensed under Apache-2.0 license
+-
+-# Allows Colcon to find non-Ament packages when using workspace underlays
+-file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/share/ament_index/resource_index/packages/${PROJECT_NAME} "")
+-install(FILES ${CMAKE_CURRENT_BINARY_DIR}/share/ament_index/resource_index/packages/${PROJECT_NAME} DESTINATION share/ament_index/resource_index/packages)
+-file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/share/${PROJECT_NAME}/hook/ament_prefix_path.dsv "prepend-non-duplicate;AMENT_PREFIX_PATH;")
+-install(FILES ${CMAKE_CURRENT_BINARY_DIR}/share/${PROJECT_NAME}/hook/ament_prefix_path.dsv DESTINATION share/${PROJECT_NAME}/hook)
+-file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/share/${PROJECT_NAME}/hook/ros_package_path.dsv "prepend-non-duplicate;ROS_PACKAGE_PATH;")
+-install(FILES ${CMAKE_CURRENT_BINARY_DIR}/share/${PROJECT_NAME}/hook/ros_package_path.dsv DESTINATION share/${PROJECT_NAME}/hook)
+-#### End iport ####
+-
+-install(DIRECTORY resources DESTINATION share/${PROJECT_NAME})
+Index: src/ur/dashboard_client.cpp
+<+>UTF-8
+===================================================================
+diff --git a/src/ur/dashboard_client.cpp b/src/ur/dashboard_client.cpp
+--- a/src/ur/dashboard_client.cpp	(revision d150af4e3873e5fa0f9d2dc28c5292b51f937d7e)
++++ b/src/ur/dashboard_client.cpp	(date 1698222363379)
+@@ -26,7 +26,6 @@
+  */
+ //----------------------------------------------------------------------
+ 
+-#include <iostream>
+ #include <regex>
+ #include <thread>
+ #include <unistd.h>
+@@ -38,6 +37,9 @@
+ 
+ namespace urcl
+ {
++
++constexpr std::size_t MAX_DASHBOARD_MSG_SIZE = 100;
++
+ DashboardClient::DashboardClient(const std::string& host) : host_(host), port_(DASHBOARD_SERVER_PORT)
+ {
+ }
+@@ -109,25 +111,26 @@
+ 
+ std::string DashboardClient::read()
+ {
+-  std::stringstream result;
++  char dashboard_message[MAX_DASHBOARD_MSG_SIZE];
++  std::size_t dashboard_message_index = 0;
+   char character;
+-  size_t read_chars = 99;
+-  while (read_chars > 0)
+-  {
+-    if (!TCPSocket::read((uint8_t*)&character, 1, read_chars))
+-    {
+-      disconnect();
+-      throw TimeoutException("Did not receive answer from dashboard server in time. Disconnecting from dashboard "
++  std::size_t read_chars = 1;
++  while (read_chars > 0) {
++    if (!TCPSocket::read((uint8_t*)&character, 1, read_chars)) {
++        disconnect();
++        throw TimeoutException("Did not receive answer from dashboard server in time. Disconnecting from dashboard "
+                              "server.",
+                              *recv_timeout_);
+     }
+-    result << character;
+-    if (character == '\n')
+-    {
+-      break;
++    if (read_chars > 0) {
++        dashboard_message[dashboard_message_index++] = character;
++        if (character == '\n') {
++            break;
++        }
+     }
+   }
+-  return result.str();
++  dashboard_message[dashboard_message_index] = '\0';
++  return std::string(dashboard_message);
+ }
+ 
+ std::string DashboardClient::sendAndReceive(const std::string& text)
+ 
